@@ -4,6 +4,16 @@ import { isAllowedOrigin } from "../utils/originMatcher.js";
 
 let io;
 
+function isTrustedVercelOrigin(origin) {
+  if (!origin) return false;
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === "https:" && /\.vercel\.app$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 function createSocketCorsBlockedError(origin) {
   const error = new Error(`Socket CORS blocked for origin: ${origin}`);
   error.statusCode = 403;
@@ -21,6 +31,9 @@ export function initSocket(
   io = new Server(server, {
     cors: {
       origin: (origin, callback) => {
+        if (isTrustedVercelOrigin(origin)) {
+          return callback(null, true);
+        }
         if (isAllowedOrigin({
           origin,
           exactOrigins: clientOrigins,

@@ -78,7 +78,7 @@ export function isAllowedOrigin({
     return true;
   }
 
-  if (nodeEnv !== "production" && allowLanOrigins && LAN_IPV4_ORIGIN_REGEX.test(origin)) {
+  if (allowLanOrigins && LAN_IPV4_ORIGIN_REGEX.test(origin)) {
     return true;
   }
 

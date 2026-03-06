@@ -49,7 +49,7 @@ function generateShareTrackingToken() {
 
 function getShareTrackingUrl(token) {
   if (!token) return null;
-  const base = env.clientOrigin || "http://localhost:8080";
+  const base = env.clientOrigin || "https://campusride-deploy.vercel.app";
   return `${base.replace(/\/$/, "")}/track/${token}`;
 }
 

@@ -3,6 +3,8 @@ import { parseOriginList } from "../utils/originMatcher.js";
 
 dotenv.config();
 
+const DEFAULT_CLIENT_ORIGINS = "http://localhost:8080,https://campusride-deploy.vercel.app";
+
 const required = ["MONGODB_URI", "JWT_SECRET"];
 
 for (const key of required) {
@@ -19,7 +21,7 @@ export const env = {
   mongoReconnectMs: Number(process.env.MONGO_RECONNECT_MS || 5000),
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
-  clientOrigins: parseOriginList(process.env.CLIENT_ORIGIN || process.env.ALLOWED_ORIGINS || "http://localhost:8080"),
+  clientOrigins: parseOriginList(process.env.CLIENT_ORIGIN || process.env.ALLOWED_ORIGINS || DEFAULT_CLIENT_ORIGINS),
   wildcardClientOriginPatterns: parseOriginList(process.env.ALLOWED_ORIGIN_PATTERNS || ""),
   allowLanOrigins: process.env.ALLOW_LAN_ORIGINS === "true",
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
@@ -37,4 +39,4 @@ env.webPushPublicKey = process.env.WEB_PUSH_PUBLIC_KEY || "";
 env.webPushPrivateKey = process.env.WEB_PUSH_PRIVATE_KEY || "";
 env.openAiApiKey = process.env.OPENAI_API_KEY || "";
 
-env.clientOrigin = env.clientOrigins[0] || "http://localhost:8080";
+env.clientOrigin = env.clientOrigins[0] || "https://campusride-deploy.vercel.app";
