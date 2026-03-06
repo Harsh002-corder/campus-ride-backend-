@@ -4,6 +4,7 @@ import { parseOriginList } from "../utils/originMatcher.js";
 dotenv.config();
 
 const DEFAULT_CLIENT_ORIGINS = "http://localhost:8080,https://campusride-deploy.vercel.app";
+const DEFAULT_WILDCARD_ORIGIN_PATTERNS = "*.vercel.app";
 
 const required = ["MONGODB_URI", "JWT_SECRET"];
 
@@ -22,7 +23,7 @@ export const env = {
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   clientOrigins: parseOriginList(process.env.CLIENT_ORIGIN || process.env.ALLOWED_ORIGINS || DEFAULT_CLIENT_ORIGINS),
-  wildcardClientOriginPatterns: parseOriginList(process.env.ALLOWED_ORIGIN_PATTERNS || ""),
+  wildcardClientOriginPatterns: parseOriginList(process.env.ALLOWED_ORIGIN_PATTERNS || DEFAULT_WILDCARD_ORIGIN_PATTERNS),
   allowLanOrigins: process.env.ALLOW_LAN_ORIGINS === "true",
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
   rateLimitMax: Number(process.env.RATE_LIMIT_MAX || 120),
