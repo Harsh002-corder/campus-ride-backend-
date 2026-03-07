@@ -150,11 +150,24 @@ export function emitRideUpdate(ride) {
   io.to("role:admin").emit("admin:ride-updated", ride);
 }
 
-export function emitNewRideRequest(ride) {
+export function emitNewRideRequest(ride, onlineDriverIds = []) {
   if (!io) {
     return;
   }
-  io.to("role:driver").emit("ride:requested", ride);
+
+  const uniqueDriverIds = [...new Set((onlineDriverIds || []).filter(Boolean).map((id) => String(id)))];
+
+  if (uniqueDriverIds.length > 0) {
+    for (const driverId of uniqueDriverIds) {
+      io.to(`user:${driverId}`).emit("newRideRequest", ride);
+      io.to(`user:${driverId}`).emit("ride:requested", ride);
+    }
+  } else {
+    // Fallback for legacy behavior if caller does not provide online driver ids.
+    io.to("role:driver").emit("newRideRequest", ride);
+    io.to("role:driver").emit("ride:requested", ride);
+  }
+
   io.to("role:admin").emit("admin:ride-requested", ride);
 }
 

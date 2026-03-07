@@ -196,9 +196,10 @@ export const bookRide = asyncHandler(async (req, res) => {
     throw new AppError(400, "Passenger names exceed passenger count");
   }
 
-  const [activeRideCount, onlineDriverCount] = await Promise.all([
+  const [activeRideCount, onlineDriverCount, onlineDrivers] = await Promise.all([
     Ride.countDocuments({ status: { $in: [RIDE_STATUS.REQUESTED, RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING] } }),
     User.countDocuments({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }),
+    User.find({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
   ]);
 
   const fareBreakdown = estimateRideFare({
@@ -267,9 +268,16 @@ export const bookRide = asyncHandler(async (req, res) => {
     });
   }
 
-  const serialized = serializeRide(ride);
+  const populatedRide = await Ride.findById(ride._id)
+    .populate("studentId", "name email phone")
+    .populate("driverId", "name email phone")
+    .lean();
+
+  const serialized = serializeRide(populatedRide || ride);
+  const onlineDriverIds = onlineDrivers.map((driver) => driver._id?.toString?.() || String(driver._id));
+
   if (!bestDriverId && !isScheduled) {
-    emitNewRideRequest(serialized);
+    emitNewRideRequest(serialized, onlineDriverIds);
   }
   emitRideUpdate(serialized);
   await createRideStatusNotifications(serialized);
