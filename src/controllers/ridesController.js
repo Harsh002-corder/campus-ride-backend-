@@ -555,7 +555,11 @@ async function startAcceptedRide({ rideId, driverId, verificationCode }) {
     throw new AppError(409, "Ride must be accepted before starting");
   }
 
-  if (typeof verificationCode === "string" && current.verificationCode !== verificationCode) {
+  if (typeof verificationCode !== "string" || verificationCode.trim().length === 0) {
+    throw new AppError(400, "Verification code is required to start the ride");
+  }
+
+  if (current.verificationCode !== verificationCode.trim()) {
     throw new AppError(400, "Invalid verification code");
   }
 
