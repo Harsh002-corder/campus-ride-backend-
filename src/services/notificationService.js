@@ -35,8 +35,10 @@ export async function createRideStatusNotifications(ride) {
   if (!ride) return;
 
   const titleByStatus = {
+    pending: "Ride Requested",
     requested: "Ride Requested",
     accepted: "Ride Accepted",
+    in_progress: "Ride Started",
     ongoing: "Ride Started",
     completed: "Ride Completed",
     cancelled: "Ride Cancelled",

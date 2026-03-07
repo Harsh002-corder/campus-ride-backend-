@@ -42,6 +42,16 @@ const DEFAULT_RIDE_SETTINGS = {
 };
 
 const DEFAULT_SHARE_LINK_TTL_MS = 1000 * 60 * 60 * 24;
+const REQUESTED_LIKE_STATUSES = [RIDE_STATUS.REQUESTED, "requested"];
+const ONGOING_LIKE_STATUSES = [RIDE_STATUS.ONGOING, "ongoing"];
+
+function isRequestedLikeStatus(status) {
+  return REQUESTED_LIKE_STATUSES.includes(status);
+}
+
+function isOngoingLikeStatus(status) {
+  return ONGOING_LIKE_STATUSES.includes(status);
+}
 
 function generateShareTrackingToken() {
   return crypto.randomBytes(24).toString("hex");
@@ -197,7 +207,7 @@ export const bookRide = asyncHandler(async (req, res) => {
   }
 
   const [activeRideCount, onlineDriverCount, onlineDrivers] = await Promise.all([
-    Ride.countDocuments({ status: { $in: [RIDE_STATUS.REQUESTED, RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING] } }),
+    Ride.countDocuments({ status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
     User.countDocuments({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }),
     User.find({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
   ]);
@@ -220,7 +230,6 @@ export const bookRide = asyncHandler(async (req, res) => {
       drop: req.body.drop,
       passengers: requestedPassengers,
     });
-  const bestDriverId = !isScheduled ? (match.bestDriver?.driverId || null) : null;
 
   const now = new Date();
   const verificationCode = await generateUniqueRideCode(Ride);
@@ -229,13 +238,13 @@ export const bookRide = asyncHandler(async (req, res) => {
 
   const rideDoc = {
     studentId: new mongoose.Types.ObjectId(req.user.id),
-    driverId: bestDriverId ? new mongoose.Types.ObjectId(bestDriverId) : null,
+    driverId: null,
     pickup: req.body.pickup,
     drop: req.body.drop,
     passengers: requestedPassengers,
     passengerNames,
     isGroupRide: requestedPassengers > 1,
-    status: isScheduled ? RIDE_STATUS.SCHEDULED : (bestDriverId ? RIDE_STATUS.ACCEPTED : RIDE_STATUS.REQUESTED),
+    status: isScheduled ? RIDE_STATUS.SCHEDULED : RIDE_STATUS.REQUESTED,
     scheduledFor: isScheduled ? scheduledFor : null,
     scheduleActivatedAt: null,
     smartMatch: match,
@@ -243,11 +252,12 @@ export const bookRide = asyncHandler(async (req, res) => {
     verificationCode,
     sharedLinkToken,
     sharedLinkExpiresAt,
+    deniedDriverIds: [],
     cancelReason: null,
     cancelledBy: null,
     driverLocation: null,
     requestedAt: isScheduled ? null : now,
-    acceptedAt: !isScheduled && bestDriverId ? now : null,
+    acceptedAt: null,
     ongoingAt: null,
     completedAt: null,
     cancelledAt: null,
@@ -276,7 +286,7 @@ export const bookRide = asyncHandler(async (req, res) => {
   const serialized = serializeRide(populatedRide || ride);
   const onlineDriverIds = onlineDrivers.map((driver) => driver._id?.toString?.() || String(driver._id));
 
-  if (!bestDriverId && !isScheduled) {
+  if (!isScheduled) {
     emitNewRideRequest(serialized, onlineDriverIds);
   }
   emitRideUpdate(serialized);
@@ -322,7 +332,7 @@ export const estimateFare = asyncHandler(async (req, res) => {
   assertRidePointsWithinCampus(req.body.pickup, req.body.drop);
 
   const [activeRideCount, onlineDriverCount] = await Promise.all([
-    Ride.countDocuments({ status: { $in: [RIDE_STATUS.REQUESTED, RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING] } }),
+    Ride.countDocuments({ status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
     User.countDocuments({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }),
   ]);
 
@@ -372,8 +382,13 @@ export const listRideHistory = asyncHandler(async (req, res) => {
   res.json({ rides: rides.map(serializeRide) });
 });
 
-export const listAvailableRides = asyncHandler(async (_req, res) => {
-  const rides = await Ride.find({ status: RIDE_STATUS.REQUESTED, driverId: null })
+export const listAvailableRides = asyncHandler(async (req, res) => {
+  const driverObjectId = new mongoose.Types.ObjectId(req.user.id);
+  const rides = await Ride.find({
+    status: { $in: REQUESTED_LIKE_STATUSES },
+    driverId: null,
+    deniedDriverIds: { $ne: driverObjectId },
+  })
     .populate("studentId", "name email phone")
     .sort({ requestedAt: -1 })
     .limit(100)
@@ -458,14 +473,16 @@ export const acceptRide = asyncHandler(async (req, res) => {
   const updatedRide = await Ride.findOneAndUpdate(
     {
       _id: rideId,
-      status: RIDE_STATUS.REQUESTED,
+      status: { $in: REQUESTED_LIKE_STATUSES },
       driverId: null,
+      deniedDriverIds: { $ne: new mongoose.Types.ObjectId(req.user.id) },
     },
     {
       $set: {
         status: RIDE_STATUS.ACCEPTED,
         driverId: new mongoose.Types.ObjectId(req.user.id),
         acceptedAt: now,
+        deniedDriverIds: [],
         updatedAt: now,
       },
     },
@@ -491,36 +508,56 @@ export const rejectRide = asyncHandler(async (req, res) => {
   if (req.user.role !== ROLES.DRIVER) {
     throw new AppError(403, "Only drivers can reject rides");
   }
-  res.json({ message: "Ride rejected. No state mutation applied." });
-});
-
-export const verifyRideStart = asyncHandler(async (req, res) => {
-  if (req.user.role !== ROLES.DRIVER) {
-    throw new AppError(403, "Only drivers can verify ride code");
-  }
 
   const rideId = new mongoose.Types.ObjectId(req.params.rideId);
   const now = new Date();
 
+  const deniedRide = await Ride.findOneAndUpdate(
+    {
+      _id: rideId,
+      status: { $in: REQUESTED_LIKE_STATUSES },
+      driverId: null,
+    },
+    {
+      $addToSet: {
+        deniedDriverIds: new mongoose.Types.ObjectId(req.user.id),
+      },
+      $set: {
+        updatedAt: now,
+      },
+    },
+    { new: true, lean: true },
+  );
+
+  if (!deniedRide) {
+    throw new AppError(409, "Ride is no longer available to deny");
+  }
+
+  res.json({ message: "Ride denied for this driver" });
+});
+
+async function startAcceptedRide({ rideId, driverId, verificationCode }) {
+  const now = new Date();
   const current = await Ride.findById(rideId).lean();
+
   if (!current) {
     throw new AppError(404, "Ride not found");
   }
 
-  if (!current.driverId || current.driverId.toString() !== req.user.id) {
+  if (!current.driverId || current.driverId.toString() !== driverId) {
     throw new AppError(403, "You are not assigned to this ride");
   }
 
   if (current.status !== RIDE_STATUS.ACCEPTED) {
-    throw new AppError(409, "Ride must be accepted before verification");
+    throw new AppError(409, "Ride must be accepted before starting");
   }
 
-  if (current.verificationCode !== req.body.code) {
+  if (typeof verificationCode === "string" && current.verificationCode !== verificationCode) {
     throw new AppError(400, "Invalid verification code");
   }
 
   const updatedRide = await Ride.findOneAndUpdate(
-    { _id: rideId, status: RIDE_STATUS.ACCEPTED },
+    { _id: rideId, status: RIDE_STATUS.ACCEPTED, driverId: new mongoose.Types.ObjectId(driverId) },
     {
       $set: {
         status: RIDE_STATUS.ONGOING,
@@ -531,6 +568,10 @@ export const verifyRideStart = asyncHandler(async (req, res) => {
     { new: true, lean: true },
   );
 
+  if (!updatedRide) {
+    throw new AppError(409, "Ride could not be started");
+  }
+
   const populated = await Ride.findById(updatedRide._id)
     .populate("studentId", "name email phone")
     .populate("driverId", "name email phone")
@@ -539,6 +580,30 @@ export const verifyRideStart = asyncHandler(async (req, res) => {
   const ride = serializeRide(populated);
   emitRideUpdate(ride);
   await createRideStatusNotifications(ride);
+  return ride;
+}
+
+export const startRide = asyncHandler(async (req, res) => {
+  if (req.user.role !== ROLES.DRIVER) {
+    throw new AppError(403, "Only drivers can start rides");
+  }
+
+  const rideId = new mongoose.Types.ObjectId(req.params.rideId);
+  const ride = await startAcceptedRide({ rideId, driverId: req.user.id });
+  res.json({ ride });
+});
+
+export const verifyRideStart = asyncHandler(async (req, res) => {
+  if (req.user.role !== ROLES.DRIVER) {
+    throw new AppError(403, "Only drivers can verify ride code");
+  }
+
+  const rideId = new mongoose.Types.ObjectId(req.params.rideId);
+  const ride = await startAcceptedRide({
+    rideId,
+    driverId: req.user.id,
+    verificationCode: req.body.code,
+  });
   res.json({ ride });
 });
 
@@ -559,12 +624,12 @@ export const completeRide = asyncHandler(async (req, res) => {
     throw new AppError(403, "You are not assigned to this ride");
   }
 
-  if (ride.status !== RIDE_STATUS.ONGOING) {
+  if (!isOngoingLikeStatus(ride.status)) {
     throw new AppError(409, "Only ongoing rides can be completed");
   }
 
   const updatedRide = await Ride.findOneAndUpdate(
-    { _id: rideId, status: RIDE_STATUS.ONGOING },
+    { _id: rideId, status: { $in: ONGOING_LIKE_STATUSES } },
     {
       $set: {
         status: RIDE_STATUS.COMPLETED,
@@ -724,7 +789,7 @@ export const cancelRide = asyncHandler(async (req, res) => {
     throw new AppError(409, "Ride is already finalized");
   }
 
-  if (isStudent && ![RIDE_STATUS.SCHEDULED, RIDE_STATUS.REQUESTED, RIDE_STATUS.ACCEPTED].includes(ride.status)) {
+  if (isStudent && ![RIDE_STATUS.SCHEDULED, ...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED].includes(ride.status)) {
     throw new AppError(409, "Students can cancel only requested or accepted rides");
   }
 
@@ -739,14 +804,14 @@ export const cancelRide = asyncHandler(async (req, res) => {
     }
   }
 
-  if (isDriver && ![RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING].includes(ride.status)) {
+  if (isDriver && ![RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES].includes(ride.status)) {
     throw new AppError(409, "Drivers can cancel only accepted or ongoing rides");
   }
 
   const cancelledBy = isStudent ? ROLES.STUDENT : isDriver ? ROLES.DRIVER : ROLES.ADMIN;
   const cancellation = resolveCancellation(req.body.reasonKey, req.body.customReason, req.body.reason);
   const updatedRide = await Ride.findOneAndUpdate(
-    { _id: rideId, status: { $in: [RIDE_STATUS.SCHEDULED, RIDE_STATUS.REQUESTED, RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING] } },
+    { _id: rideId, status: { $in: [RIDE_STATUS.SCHEDULED, ...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } },
     {
       $set: {
         status: RIDE_STATUS.CANCELLED,
@@ -848,7 +913,7 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
     throw new AppError(403, "You are not assigned to this ride");
   }
 
-  if (![RIDE_STATUS.ACCEPTED, RIDE_STATUS.ONGOING].includes(ride.status)) {
+  if (![RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES].includes(ride.status)) {
     throw new AppError(409, "Ride location can be updated only in accepted/ongoing states");
   }
 
@@ -944,7 +1009,7 @@ function getTimingInsights(ride) {
 
   const target = status === RIDE_STATUS.ACCEPTED
     ? ride.pickup
-    : status === RIDE_STATUS.ONGOING
+    : isOngoingLikeStatus(status)
       ? ride.drop
       : null;
 
@@ -969,7 +1034,7 @@ function getTimingInsights(ride) {
     }
   }
 
-  if (!isDelayed && status === RIDE_STATUS.ONGOING && ongoingAt && baselineTripMinutes > 0) {
+  if (!isDelayed && isOngoingLikeStatus(status) && ongoingAt && baselineTripMinutes > 0) {
     const inRideMinutes = Math.floor((now - ongoingAt) / 60000);
     if (inRideMinutes > baselineTripMinutes + 8) {
       isDelayed = true;
@@ -1017,9 +1082,9 @@ function serializeRide(ride) {
   if (!ride) return null;
 
   const shouldExposeVerificationCode = [
-    RIDE_STATUS.REQUESTED,
+    ...REQUESTED_LIKE_STATUSES,
     RIDE_STATUS.ACCEPTED,
-    RIDE_STATUS.ONGOING,
+    ...ONGOING_LIKE_STATUSES,
   ].includes(ride.status);
 
   const studentId = ride.studentId && typeof ride.studentId === "object" && ride.studentId._id

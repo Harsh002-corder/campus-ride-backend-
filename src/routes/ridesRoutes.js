@@ -18,6 +18,7 @@ import {
   quickBookRideSchema,
   rejectRide,
   rideFeedbackSchema,
+  startRide,
   submitRideFeedback,
   updateDriverLocation,
   verifyRideSchema,
@@ -41,6 +42,8 @@ router.get("/:rideId", getRideById);
 router.get("/:rideId/invoice", downloadRideInvoice);
 router.post("/:rideId/accept", requireRole(ROLES.DRIVER), acceptRide);
 router.post("/:rideId/reject", requireRole(ROLES.DRIVER), rejectRide);
+router.post("/:rideId/deny", requireRole(ROLES.DRIVER), rejectRide);
+router.post("/:rideId/start", requireRole(ROLES.DRIVER), startRide);
 router.post("/:rideId/verify", requireRole(ROLES.DRIVER), validate(verifyRideSchema), verifyRideStart);
 router.post("/:rideId/complete", requireRole(ROLES.DRIVER), completeRide);
 router.post("/:rideId/feedback", requireRole(ROLES.STUDENT), validate(rideFeedbackSchema), submitRideFeedback);

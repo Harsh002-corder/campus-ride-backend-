@@ -1,5 +1,4 @@
 import cron from "node-cron";
-import mongoose from "mongoose";
 import { RIDE_STATUS } from "../constants/roles.js";
 import { Ride, ScheduledRide } from "../models/index.js";
 import { findBestDriverForRide } from "./matchingService.js";
@@ -29,17 +28,16 @@ async function activateScheduledRide(entry) {
     passengers: ride.passengers || 1,
   });
 
-  const bestDriverId = match.bestDriver?.driverId || null;
-
   const updatedRide = await Ride.findByIdAndUpdate(
     ride._id,
     {
       $set: {
-        status: bestDriverId ? RIDE_STATUS.ACCEPTED : RIDE_STATUS.REQUESTED,
-        driverId: bestDriverId ? new mongoose.Types.ObjectId(bestDriverId) : null,
-        acceptedAt: bestDriverId ? now : null,
+        status: RIDE_STATUS.REQUESTED,
+        driverId: null,
+        acceptedAt: null,
         requestedAt: ride.requestedAt || now,
         smartMatch: match,
+        deniedDriverIds: [],
         scheduleActivatedAt: now,
         updatedAt: now,
       },
@@ -67,16 +65,14 @@ async function activateScheduledRide(entry) {
     drop: updatedRide.drop,
   });
 
-  if (!bestDriverId) {
-    emitNewRideRequest({
-      id: updatedRide._id.toString(),
-      studentId: updatedRide.studentId?.toString?.() || updatedRide.studentId,
-      driverId: null,
-      status: updatedRide.status,
-      pickup: updatedRide.pickup,
-      drop: updatedRide.drop,
-    });
-  }
+  emitNewRideRequest({
+    id: updatedRide._id.toString(),
+    studentId: updatedRide.studentId?.toString?.() || updatedRide.studentId,
+    driverId: null,
+    status: updatedRide.status,
+    pickup: updatedRide.pickup,
+    drop: updatedRide.drop,
+  });
 
   await createRideStatusNotifications({
     id: updatedRide._id.toString(),

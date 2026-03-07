@@ -6,9 +6,9 @@ export const ROLES = {
 
 export const RIDE_STATUS = {
   SCHEDULED: "scheduled",
-  REQUESTED: "requested",
+  REQUESTED: "pending",
   ACCEPTED: "accepted",
-  ONGOING: "ongoing",
+  ONGOING: "in_progress",
   COMPLETED: "completed",
   CANCELLED: "cancelled",
 };
