@@ -353,10 +353,13 @@ export const listMyRides = asyncHandler(async (req, res) => {
       ? { driverId: new mongoose.Types.ObjectId(req.user.id) }
       : {};
 
+  // Driver dashboards behave as a queue: oldest accepted ride should stay active first.
+  const sortByCreatedAt = req.user.role === ROLES.DRIVER ? 1 : -1;
+
   const rides = await Ride.find(query)
     .populate("studentId", "name email phone")
     .populate("driverId", "name email phone")
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: sortByCreatedAt })
     .limit(200)
     .lean();
   res.json({ rides: rides.map(serializeRide) });
