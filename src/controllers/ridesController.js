@@ -65,7 +65,7 @@ function getShareTrackingUrl(token) {
 
 function assertRidePointsWithinCampus(pickup, drop) {
   if (!isWithinCampusBoundary(pickup) || !isWithinCampusBoundary(drop)) {
-    throw new AppError(400, "Pickup and drop must be within campus boundary");
+    throw new AppError(400, "Ride service is available only inside the campus.");
   }
 }
 
@@ -943,6 +943,10 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
 
   if (![RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES].includes(ride.status)) {
     throw new AppError(409, "Ride location can be updated only in accepted/ongoing states");
+  }
+
+  if (!isWithinCampusBoundary({ lat: req.body.lat, lng: req.body.lng })) {
+    throw new AppError(400, "Ride service is available only inside the campus.");
   }
 
   const lastUpdateAt = isDriver
