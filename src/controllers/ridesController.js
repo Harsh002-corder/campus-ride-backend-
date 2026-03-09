@@ -44,6 +44,8 @@ const DEFAULT_RIDE_SETTINGS = {
 const DEFAULT_SHARE_LINK_TTL_MS = 1000 * 60 * 60 * 24;
 const REQUESTED_LIKE_STATUSES = [RIDE_STATUS.REQUESTED, "requested"];
 const ONGOING_LIKE_STATUSES = [RIDE_STATUS.ONGOING, "ongoing"];
+// Temporary switch: keep false until campus polygon is corrected.
+const ENFORCE_CAMPUS_BOUNDARY = false;
 
 function isRequestedLikeStatus(status) {
   return REQUESTED_LIKE_STATUSES.includes(status);
@@ -64,6 +66,7 @@ function getShareTrackingUrl(token) {
 }
 
 function assertRidePointsWithinCampus(pickup, drop) {
+  if (!ENFORCE_CAMPUS_BOUNDARY) return;
   if (!isWithinCampusBoundary(pickup) || !isWithinCampusBoundary(drop)) {
     throw new AppError(400, "Pickup and drop must be inside the campus boundary.");
   }
@@ -945,7 +948,7 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
     throw new AppError(409, "Ride location can be updated only in accepted/ongoing states");
   }
 
-  if (!isWithinCampusBoundary({ lat: req.body.lat, lng: req.body.lng })) {
+  if (ENFORCE_CAMPUS_BOUNDARY && !isWithinCampusBoundary({ lat: req.body.lat, lng: req.body.lng })) {
     throw new AppError(400, "Driver location must stay inside the campus boundary.");
   }
 
