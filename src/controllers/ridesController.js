@@ -3,7 +3,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
 import { RIDE_STATUS, ROLES } from "../constants/roles.js";
-import { Cancellation, EmailLog, Favorite, Payment, Ride, ScheduledRide, Setting, User } from "../models/index.js";
+import { Cancellation, EmailLog, Favorite, Payment, Rating, Ride, ScheduledRide, Setting, User } from "../models/index.js";
 import { AppError } from "../utils/AppError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { generateUniqueRideCode } from "../utils/rideCode.js";
@@ -769,6 +769,24 @@ export const submitRideFeedback = asyncHandler(async (req, res) => {
     .lean();
 
   const serialized = serializeRide(populated);
+
+  if (ride.driverId && ride.studentId) {
+    await Rating.findOneAndUpdate(
+      { rideId: new mongoose.Types.ObjectId(rideId) },
+      {
+        $set: {
+          rideId: new mongoose.Types.ObjectId(rideId),
+          fromUserId: new mongoose.Types.ObjectId(ride.studentId),
+          toUserId: new mongoose.Types.ObjectId(ride.driverId),
+          rating: req.body.rating,
+          comment: req.body.message || "",
+          createdAt: now,
+        },
+      },
+      { upsert: true, new: true },
+    );
+  }
+
   emitRideUpdate(serialized);
   await createRideStatusNotifications(serialized);
   if (serialized.driverId) {
