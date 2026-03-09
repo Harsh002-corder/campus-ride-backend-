@@ -328,6 +328,7 @@ function sanitizeUser(user) {
     name: user.name,
     email: user.email,
     phone: user.phone || null,
+    avatarUrl: user.avatarUrl || null,
     role: user.role,
     isOnline: Boolean(user.isOnline),
     isActive: user.isActive !== false,
