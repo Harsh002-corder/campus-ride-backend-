@@ -539,7 +539,7 @@ export const rejectRide = asyncHandler(async (req, res) => {
   res.json({ message: "Ride denied for this driver" });
 });
 
-async function startAcceptedRide({ rideId, driverId, verificationCode }) {
+async function startAcceptedRide({ rideId, driverId, verificationCode, requireVerification = false }) {
   const now = new Date();
   const current = await Ride.findById(rideId).lean();
 
@@ -555,12 +555,14 @@ async function startAcceptedRide({ rideId, driverId, verificationCode }) {
     throw new AppError(409, "Ride must be accepted before starting");
   }
 
-  if (typeof verificationCode !== "string" || verificationCode.trim().length === 0) {
-    throw new AppError(400, "Verification code is required to start the ride");
-  }
+  if (requireVerification) {
+    if (typeof verificationCode !== "string" || verificationCode.trim().length === 0) {
+      throw new AppError(400, "Verification code is required to start the ride");
+    }
 
-  if (current.verificationCode !== verificationCode.trim()) {
-    throw new AppError(400, "Invalid verification code");
+    if (current.verificationCode !== verificationCode.trim()) {
+      throw new AppError(400, "Invalid verification code");
+    }
   }
 
   const updatedRide = await Ride.findOneAndUpdate(
@@ -596,7 +598,7 @@ export const startRide = asyncHandler(async (req, res) => {
   }
 
   const rideId = new mongoose.Types.ObjectId(req.params.rideId);
-  const ride = await startAcceptedRide({ rideId, driverId: req.user.id });
+  const ride = await startAcceptedRide({ rideId, driverId: req.user.id, requireVerification: false });
   res.json({ ride });
 });
 
@@ -610,6 +612,7 @@ export const verifyRideStart = asyncHandler(async (req, res) => {
     rideId,
     driverId: req.user.id,
     verificationCode: req.body.code,
+    requireVerification: true,
   });
   res.json({ ride });
 });
