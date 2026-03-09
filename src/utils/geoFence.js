@@ -1,18 +1,46 @@
-export const CAMPUS_BOUNDARY_POLYGON = [
-  { lat: 28.835700, lng: 78.689900 },
-  { lat: 28.835300, lng: 78.694500 },
-  { lat: 28.835000, lng: 78.698500 },
-  { lat: 28.833800, lng: 78.701200 },
-  { lat: 28.831200, lng: 78.701400 },
-  { lat: 28.828900, lng: 78.700500 },
-  { lat: 28.827500, lng: 78.698300 },
-  { lat: 28.826900, lng: 78.695900 },
-  { lat: 28.827200, lng: 78.693000 },
-  { lat: 28.828500, lng: 78.690900 },
-  { lat: 28.830500, lng: 78.689900 },
-  { lat: 28.833200, lng: 78.689500 },
-  { lat: 28.835700, lng: 78.689900 },
-];
+import { CAMPUS_STOPS } from "../data/stops.js";
+
+function cross(origin, pointA, pointB) {
+  return (pointA.lat - origin.lat) * (pointB.lng - origin.lng)
+    - (pointA.lng - origin.lng) * (pointB.lat - origin.lat);
+}
+
+function computeConvexHull(points) {
+  const unique = Array.from(
+    new Map(points.map((point) => [`${point.lat.toFixed(6)}:${point.lng.toFixed(6)}`, point])).values(),
+  );
+
+  if (unique.length <= 3) {
+    return unique;
+  }
+
+  const sorted = [...unique].sort((left, right) => (left.lat - right.lat) || (left.lng - right.lng));
+
+  const lower = [];
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+      lower.pop();
+    }
+    lower.push(point);
+  }
+
+  const upper = [];
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const point = sorted[index];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+      upper.pop();
+    }
+    upper.push(point);
+  }
+
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
+}
+
+export const CAMPUS_BOUNDARY_POLYGON = computeConvexHull(
+  CAMPUS_STOPS.map((stop) => ({ lat: stop.lat, lng: stop.lng })),
+);
 
 function isValidPoint(point) {
   return Boolean(
