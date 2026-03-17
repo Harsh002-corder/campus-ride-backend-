@@ -31,6 +31,7 @@ export function estimateRideFare({
   perKmRate = 12,
   perMinuteRate = 1.5,
   minimumFare = 40,
+  platformFeePercent = 0,
 }) {
   const distanceKm = haversineDistanceKm(pickup, drop);
   const estimatedDurationMinutes = Math.max(4, (distanceKm / 24) * 60);
@@ -42,7 +43,9 @@ export function estimateRideFare({
   const timeCharge = estimatedDurationMinutes * perMinuteRate;
   const subtotal = baseFare + distanceCharge + timeCharge;
   const surgedTotal = subtotal * surgeMultiplier;
-  const totalFare = Math.max(minimumFare, Math.round(surgedTotal));
+  const platformFee = surgedTotal * (Math.max(0, platformFeePercent) / 100);
+  const totalBeforeMinimum = surgedTotal + platformFee;
+  const totalFare = Math.max(minimumFare, Math.round(totalBeforeMinimum));
 
   return {
     currency: "INR",
@@ -53,6 +56,8 @@ export function estimateRideFare({
     timeCharge: Number(timeCharge.toFixed(2)),
     surgeMultiplier: Number(surgeMultiplier.toFixed(2)),
     subtotal: Number(subtotal.toFixed(2)),
+    platformFeePercent: Number(platformFeePercent.toFixed(2)),
+    platformFee: Number(platformFee.toFixed(2)),
     totalFare,
     generatedAt: new Date().toISOString(),
   };

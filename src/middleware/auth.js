@@ -26,6 +26,7 @@ export async function requireAuth(req, _res, next) {
       id: user._id.toString(),
       email: user.email,
       role: user.role,
+      collegeId: user.collegeId?.toString?.() || null,
       name: user.name,
       driverApprovalStatus: user.driverApprovalStatus,
     };

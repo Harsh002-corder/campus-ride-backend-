@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 import crypto from "crypto";
 import { z } from "zod";
 import { env } from "../config/env.js";
-import { RIDE_STATUS, ROLES } from "../constants/roles.js";
-import { Cancellation, EmailLog, Favorite, Payment, Rating, Ride, ScheduledRide, Setting, User } from "../models/index.js";
+import { RIDE_STATUS, ROLES, ADMIN_DASHBOARD_ROLES } from "../constants/roles.js";
+import { Cancellation, College, EmailLog, Payment, Rating, Ride, ScheduledRide, Setting, User } from "../models/index.js";
 import { AppError } from "../utils/AppError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { generateUniqueRideCode } from "../utils/rideCode.js";
@@ -13,7 +13,7 @@ import { estimateRideFare } from "../services/fareService.js";
 import { createRideStatusNotifications } from "../services/notificationService.js";
 import { generateRideInvoiceBuffer } from "../services/pdfInvoiceService.js";
 import { recomputeDriverPerformance } from "../services/driverPerformanceService.js";
-import { isWithinCampusBoundary } from "../utils/geoFence.js";
+import { CAMPUS_BOUNDARY_POLYGON, distanceInMeters, pointInPolygon } from "../utils/geoFence.js";
 import { sendRideInvoiceEmail } from "../utils/mailer.js";
 
 const CANCELLATION_REASONS = {
@@ -31,6 +31,13 @@ const RIDE_SETTING_KEYS = {
   cancellationWindowMinutes: "ride_cancellation_window_minutes",
   locationSyncIntervalSeconds: "ride_location_sync_interval_seconds",
   supportPhone: "ride_support_phone",
+  baseFare: "ride_base_fare",
+  perKmRate: "ride_per_km_rate",
+  perMinuteRate: "ride_per_minute_rate",
+  minimumFare: "ride_minimum_fare",
+  platformFeePercent: "ride_platform_fee_percent",
+  pickupDropStops: "ride_pickup_drop_stops",
+  campusBoundaryPolygon: "ride_campus_boundary_polygon",
 };
 
 const DEFAULT_RIDE_SETTINGS = {
@@ -39,13 +46,23 @@ const DEFAULT_RIDE_SETTINGS = {
   cancellationWindowMinutes: 10,
   locationSyncIntervalSeconds: 5,
   supportPhone: "+91 90000 00000",
+  baseFare: 20,
+  perKmRate: 12,
+  perMinuteRate: 1.5,
+  minimumFare: 40,
+  platformFeePercent: 0,
+  pickupDropStops: [],
+  campusBoundaryPolygon: CAMPUS_BOUNDARY_POLYGON,
+  matchingRadiusKm: 8,
 };
 
 const DEFAULT_SHARE_LINK_TTL_MS = 1000 * 60 * 60 * 24;
 const REQUESTED_LIKE_STATUSES = [RIDE_STATUS.REQUESTED, "requested"];
 const ONGOING_LIKE_STATUSES = [RIDE_STATUS.ONGOING, "ongoing"];
-// Temporary switch: keep false until campus polygon is corrected.
-const ENFORCE_CAMPUS_BOUNDARY = false;
+// TODO: set back to true before going live
+const ENFORCE_CAMPUS_BOUNDARY = true;
+const MAX_PICKUP_GPS_DISTANCE_METERS = 200;
+const COARSE_GPS_ACCURACY_THRESHOLD_METERS = 1200;
 
 function isRequestedLikeStatus(status) {
   return REQUESTED_LIKE_STATUSES.includes(status);
@@ -65,10 +82,35 @@ function getShareTrackingUrl(token) {
   return `${base.replace(/\/$/, "")}/track/${token}`;
 }
 
-function assertRidePointsWithinCampus(pickup, drop) {
+function assertRidePointsWithinCampus(pickup, drop, boundaryPolygon) {
   if (!ENFORCE_CAMPUS_BOUNDARY) return;
-  if (!isWithinCampusBoundary(pickup) || !isWithinCampusBoundary(drop)) {
-    throw new AppError(400, "Pickup and drop must be inside the campus boundary.");
+  if (!isWithinBoundary(pickup, boundaryPolygon)) {
+    throw new AppError(400, "Pickup location must be inside the campus.");
+  }
+  if (!isWithinBoundary(drop, boundaryPolygon)) {
+    throw new AppError(400, "Drop location must be inside the campus boundary.");
+  }
+}
+
+function assertPickupGpsVerification(pickup, studentGps, boundaryPolygon) {
+  if (!studentGps || typeof studentGps.lat !== "number" || typeof studentGps.lng !== "number") {
+    throw new AppError(400, "Enable GPS location to verify your pickup point.");
+  }
+
+  const accuracy = Number(studentGps.accuracy);
+  const isCoarseGps = !Number.isFinite(accuracy) || accuracy > COARSE_GPS_ACCURACY_THRESHOLD_METERS;
+
+  if (ENFORCE_CAMPUS_BOUNDARY && !isWithinBoundary(studentGps, boundaryPolygon) && !isCoarseGps) {
+    throw new AppError(400, "Pickup location must be inside the campus.");
+  }
+
+  const meters = distanceInMeters(
+    { lat: studentGps.lat, lng: studentGps.lng },
+    { lat: pickup.lat, lng: pickup.lng },
+  );
+
+  if (ENFORCE_CAMPUS_BOUNDARY && meters > MAX_PICKUP_GPS_DISTANCE_METERS && !isCoarseGps) {
+    throw new AppError(400, "Pickup location must be within 200 meters of your current GPS location.");
   }
 }
 
@@ -87,17 +129,123 @@ function parseNumberSetting(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-async function getRideRuntimeSettings() {
+function normalizeStopList(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const name = String(item.name || "").trim();
+      const lat = Number(item.lat);
+      const lng = Number(item.lng);
+      if (!name || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      return { name, lat, lng };
+    })
+    .filter(Boolean);
+
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function normalizePolygon(value, fallback = CAMPUS_BOUNDARY_POLYGON) {
+  if (!Array.isArray(value)) return fallback;
+
+  const normalized = value
+    .map((point) => {
+      if (Array.isArray(point) && point.length >= 2) {
+        const lat = Number(point[0]);
+        const lng = Number(point[1]);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+        return null;
+      }
+
+      if (point && typeof point === "object") {
+        const lat = Number(point.lat);
+        const lng = Number(point.lng);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) return { lat, lng };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+
+  if (normalized.length < 3) return fallback;
+
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+  if (first.lat !== last.lat || first.lng !== last.lng) {
+    normalized.push({ ...first });
+  }
+
+  return normalized;
+}
+
+function isWithinBoundary(point, polygon = CAMPUS_BOUNDARY_POLYGON) {
+  if (!point || typeof point.lat !== "number" || typeof point.lng !== "number") return false;
+  if (!Array.isArray(polygon) || polygon.length < 3) return false;
+
+  const latitudes = polygon.map((entry) => entry.lat);
+  const longitudes = polygon.map((entry) => entry.lng);
+  const insideBounds = point.lat >= Math.min(...latitudes)
+    && point.lat <= Math.max(...latitudes)
+    && point.lng >= Math.min(...longitudes)
+    && point.lng <= Math.max(...longitudes);
+
+  return insideBounds && pointInPolygon(point, polygon);
+}
+
+function getTodayDateRange() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+}
+
+function getRideFinancials(ride) {
+  const totalFare = Number(ride?.fareBreakdown?.totalFare || 0);
+  const platformFee = Number(ride?.fareBreakdown?.platformFee || 0);
+  const driverEarning = Number((totalFare - platformFee).toFixed(2));
+
+  return {
+    totalFare: Number(totalFare.toFixed(2)),
+    platformFee: Number(platformFee.toFixed(2)),
+    driverEarning,
+  };
+}
+
+async function getRideRuntimeSettings(collegeId = null) {
   const keys = Object.values(RIDE_SETTING_KEYS);
   const rows = await Setting.find({ key: { $in: keys } }).lean();
   const map = new Map(rows.map((row) => [row.key, row.value]));
 
+  const college = collegeId && mongoose.Types.ObjectId.isValid(collegeId)
+    ? await College.findById(collegeId).lean()
+    : null;
+
+  const collegeConfig = college?.config || {};
+  const collegeBoundary = Array.isArray(college?.boundaryPolygon) && college.boundaryPolygon.length >= 3
+    ? college.boundaryPolygon
+    : null;
+
   return {
+    collegeId: college?._id?.toString?.() || null,
     bookingEnabled: parseBooleanSetting(map.get(RIDE_SETTING_KEYS.bookingEnabled), DEFAULT_RIDE_SETTINGS.bookingEnabled),
-    maxPassengers: Math.max(1, Math.min(6, parseNumberSetting(map.get(RIDE_SETTING_KEYS.maxPassengers), DEFAULT_RIDE_SETTINGS.maxPassengers))),
+    maxPassengers: Math.max(1, Math.min(6, parseNumberSetting(collegeConfig.maxPassengers ?? map.get(RIDE_SETTING_KEYS.maxPassengers), DEFAULT_RIDE_SETTINGS.maxPassengers))),
     cancellationWindowMinutes: Math.max(0, parseNumberSetting(map.get(RIDE_SETTING_KEYS.cancellationWindowMinutes), DEFAULT_RIDE_SETTINGS.cancellationWindowMinutes)),
     locationSyncIntervalSeconds: Math.max(1, parseNumberSetting(map.get(RIDE_SETTING_KEYS.locationSyncIntervalSeconds), DEFAULT_RIDE_SETTINGS.locationSyncIntervalSeconds)),
     supportPhone: String(map.get(RIDE_SETTING_KEYS.supportPhone) || DEFAULT_RIDE_SETTINGS.supportPhone),
+    baseFare: Math.max(0, parseNumberSetting(collegeConfig.baseFare ?? map.get(RIDE_SETTING_KEYS.baseFare), DEFAULT_RIDE_SETTINGS.baseFare)),
+    perKmRate: Math.max(0, parseNumberSetting(collegeConfig.perKmRate ?? map.get(RIDE_SETTING_KEYS.perKmRate), DEFAULT_RIDE_SETTINGS.perKmRate)),
+    perMinuteRate: Math.max(0, parseNumberSetting(collegeConfig.perMinuteRate ?? map.get(RIDE_SETTING_KEYS.perMinuteRate), DEFAULT_RIDE_SETTINGS.perMinuteRate)),
+    minimumFare: Math.max(0, parseNumberSetting(collegeConfig.minimumFare ?? map.get(RIDE_SETTING_KEYS.minimumFare), DEFAULT_RIDE_SETTINGS.minimumFare)),
+    platformFeePercent: Math.max(0, Math.min(100, parseNumberSetting(collegeConfig.platformFeePercent ?? map.get(RIDE_SETTING_KEYS.platformFeePercent), DEFAULT_RIDE_SETTINGS.platformFeePercent))),
+    matchingRadiusKm: Math.max(0.2, parseNumberSetting(collegeConfig.matchingRadiusKm, DEFAULT_RIDE_SETTINGS.matchingRadiusKm)),
+    pickupDropStops: normalizeStopList(map.get(RIDE_SETTING_KEYS.pickupDropStops), DEFAULT_RIDE_SETTINGS.pickupDropStops),
+    campusBoundary: collegeBoundary
+      ? normalizePolygon(collegeBoundary, DEFAULT_RIDE_SETTINGS.campusBoundaryPolygon)
+      : normalizePolygon(map.get(RIDE_SETTING_KEYS.campusBoundaryPolygon), DEFAULT_RIDE_SETTINGS.campusBoundaryPolygon),
   };
 }
 
@@ -140,15 +288,11 @@ const locationSchema = z.object({
 export const bookRideSchema = z.object({
   pickup: locationSchema,
   drop: locationSchema,
-  passengers: z.number().int().min(1).max(6).optional(),
-  passengerNames: z.array(z.string().min(1).max(60)).max(10).optional(),
-  scheduledAt: z.string().datetime().optional(),
-  splitFare: z.boolean().optional(),
-});
-
-export const quickBookRideSchema = z.object({
-  pickupFavoriteId: z.string().min(1),
-  dropFavoriteId: z.string().min(1),
+  studentGps: z.object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    accuracy: z.number().positive().max(5000).optional(),
+  }).optional(),
   passengers: z.number().int().min(1).max(6).optional(),
   passengerNames: z.array(z.string().min(1).max(60)).max(10).optional(),
   scheduledAt: z.string().datetime().optional(),
@@ -176,6 +320,9 @@ export const verifyRideSchema = z.object({
 export const driverLocationSchema = z.object({
   lat: z.number(),
   lng: z.number(),
+  heading: z.number().min(0).max(360).optional(),
+  speed: z.number().min(0).optional(),
+  timestamp: z.string().datetime().optional(),
 });
 
 export const rideFeedbackSchema = z.object({
@@ -188,12 +335,18 @@ export const bookRide = asyncHandler(async (req, res) => {
     throw new AppError(403, "Only students can book rides");
   }
 
-  const settings = await getRideRuntimeSettings();
+  const student = await User.findById(req.user.id).select("collegeId").lean();
+  if (!student?.collegeId) {
+    throw new AppError(400, "Your account is not mapped to a college. Contact admin.");
+  }
+
+  const settings = await getRideRuntimeSettings(student.collegeId.toString());
   if (!settings.bookingEnabled) {
     throw new AppError(409, `Ride booking is currently disabled. Contact support at ${settings.supportPhone}`);
   }
 
-  assertRidePointsWithinCampus(req.body.pickup, req.body.drop);
+  assertRidePointsWithinCampus(req.body.pickup, req.body.drop, settings.campusBoundary);
+  assertPickupGpsVerification(req.body.pickup, req.body.studentGps, settings.campusBoundary);
 
   const requestedPassengers = req.body.passengers || 1;
   const passengerNames = (req.body.passengerNames || []).slice(0, requestedPassengers);
@@ -210,9 +363,9 @@ export const bookRide = asyncHandler(async (req, res) => {
   }
 
   const [activeRideCount, onlineDriverCount, onlineDrivers] = await Promise.all([
-    Ride.countDocuments({ status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
-    User.countDocuments({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }),
-    User.find({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
+    Ride.countDocuments({ collegeId: student.collegeId, status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
+    User.countDocuments({ role: ROLES.DRIVER, collegeId: student.collegeId, isOnline: true, driverApprovalStatus: "approved" }),
+    User.find({ role: ROLES.DRIVER, collegeId: student.collegeId, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
   ]);
 
   const fareBreakdown = estimateRideFare({
@@ -220,6 +373,11 @@ export const bookRide = asyncHandler(async (req, res) => {
     drop: req.body.drop,
     activeRideCount,
     onlineDriverCount,
+    baseFare: settings.baseFare,
+    perKmRate: settings.perKmRate,
+    perMinuteRate: settings.perMinuteRate,
+    minimumFare: settings.minimumFare,
+    platformFeePercent: settings.platformFeePercent,
   });
 
   if (splitFare && requestedPassengers > 1) {
@@ -232,6 +390,8 @@ export const bookRide = asyncHandler(async (req, res) => {
       pickup: req.body.pickup,
       drop: req.body.drop,
       passengers: requestedPassengers,
+      collegeId: student.collegeId.toString(),
+      matchingRadiusKm: settings.matchingRadiusKm,
     });
 
   const now = new Date();
@@ -241,6 +401,7 @@ export const bookRide = asyncHandler(async (req, res) => {
 
   const rideDoc = {
     studentId: new mongoose.Types.ObjectId(req.user.id),
+    collegeId: student.collegeId,
     driverId: null,
     pickup: req.body.pickup,
     drop: req.body.drop,
@@ -297,46 +458,13 @@ export const bookRide = asyncHandler(async (req, res) => {
   res.status(201).json({ ride: serialized });
 });
 
-export const quickBookRide = asyncHandler(async (req, res) => {
-  if (req.user.role !== ROLES.STUDENT) {
-    throw new AppError(403, "Only students can quick-book rides");
-  }
-
-  const [pickupFavorite, dropFavorite] = await Promise.all([
-    Favorite.findOne({
-      _id: new mongoose.Types.ObjectId(req.body.pickupFavoriteId),
-      userId: new mongoose.Types.ObjectId(req.user.id),
-    }).lean(),
-    Favorite.findOne({
-      _id: new mongoose.Types.ObjectId(req.body.dropFavoriteId),
-      userId: new mongoose.Types.ObjectId(req.user.id),
-    }).lean(),
-  ]);
-
-  if (!pickupFavorite || !dropFavorite) {
-    throw new AppError(404, "Favorite locations not found");
-  }
-
-  req.body.pickup = {
-    lat: pickupFavorite.location.lat,
-    lng: pickupFavorite.location.lng,
-    label: pickupFavorite.label,
-  };
-  req.body.drop = {
-    lat: dropFavorite.location.lat,
-    lng: dropFavorite.location.lng,
-    label: dropFavorite.label,
-  };
-
-  return bookRide(req, res);
-});
-
 export const estimateFare = asyncHandler(async (req, res) => {
-  assertRidePointsWithinCampus(req.body.pickup, req.body.drop);
+  const settings = await getRideRuntimeSettings(req.user.collegeId || null);
+  assertRidePointsWithinCampus(req.body.pickup, req.body.drop, settings.campusBoundary);
 
   const [activeRideCount, onlineDriverCount] = await Promise.all([
-    Ride.countDocuments({ status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
-    User.countDocuments({ role: ROLES.DRIVER, isOnline: true, driverApprovalStatus: "approved" }),
+    Ride.countDocuments({ ...(settings.collegeId ? { collegeId: settings.collegeId } : {}), status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
+    User.countDocuments({ role: ROLES.DRIVER, ...(settings.collegeId ? { collegeId: settings.collegeId } : {}), isOnline: true, driverApprovalStatus: "approved" }),
   ]);
 
   const fare = estimateRideFare({
@@ -344,6 +472,11 @@ export const estimateFare = asyncHandler(async (req, res) => {
     drop: req.body.drop,
     activeRideCount,
     onlineDriverCount,
+    baseFare: settings.baseFare,
+    perKmRate: settings.perKmRate,
+    perMinuteRate: settings.perMinuteRate,
+    minimumFare: settings.minimumFare,
+    platformFeePercent: settings.platformFeePercent,
   });
 
   res.json({ fare });
@@ -354,7 +487,9 @@ export const listMyRides = asyncHandler(async (req, res) => {
     ? { studentId: new mongoose.Types.ObjectId(req.user.id) }
     : req.user.role === ROLES.DRIVER
       ? { driverId: new mongoose.Types.ObjectId(req.user.id) }
-      : {};
+      : (req.user.role === ROLES.SUB_ADMIN && req.user.collegeId)
+        ? { collegeId: new mongoose.Types.ObjectId(req.user.collegeId) }
+        : {};
 
   // Driver dashboards behave as a queue: oldest accepted ride should stay active first.
   const sortByCreatedAt = req.user.role === ROLES.DRIVER ? 1 : -1;
@@ -373,7 +508,9 @@ export const listRideHistory = asyncHandler(async (req, res) => {
     ? { studentId: new mongoose.Types.ObjectId(req.user.id) }
     : req.user.role === ROLES.DRIVER
       ? { driverId: new mongoose.Types.ObjectId(req.user.id) }
-      : {};
+      : (req.user.role === ROLES.SUB_ADMIN && req.user.collegeId)
+        ? { collegeId: new mongoose.Types.ObjectId(req.user.collegeId) }
+        : {};
 
   const rides = await Ride.find({
     ...query,
@@ -388,9 +525,71 @@ export const listRideHistory = asyncHandler(async (req, res) => {
   res.json({ rides: rides.map(serializeRide) });
 });
 
+export const getDriverTodayEarnings = asyncHandler(async (req, res) => {
+  if (req.user.role !== ROLES.DRIVER) {
+    throw new AppError(403, "Only drivers can view today earnings");
+  }
+
+  const { start, end } = getTodayDateRange();
+  const driverId = new mongoose.Types.ObjectId(req.user.id);
+
+  const rides = await Ride.find({
+    driverId,
+    status: RIDE_STATUS.COMPLETED,
+    completedAt: { $gte: start, $lt: end },
+  })
+    .populate("studentId", "name email phone")
+    .populate("driverId", "name email phone")
+    .sort({ completedAt: -1 })
+    .lean();
+
+  const serializedRides = rides.map((ride) => {
+    const serialized = serializeRide(ride);
+    const financials = getRideFinancials(ride);
+
+    return {
+      ...serialized,
+      rideTime: serialized.completedAt || serialized.updatedAt || serialized.createdAt,
+      totalFare: financials.totalFare,
+      platformFee: financials.platformFee,
+      driverEarning: financials.driverEarning,
+    };
+  });
+
+  const summary = serializedRides.reduce((accumulator, ride) => ({
+    totalEarnings: accumulator.totalEarnings + ride.totalFare,
+    platformCharges: accumulator.platformCharges + ride.platformFee,
+    netDriverEarnings: accumulator.netDriverEarnings + ride.driverEarning,
+    completedRides: accumulator.completedRides + 1,
+  }), {
+    totalEarnings: 0,
+    platformCharges: 0,
+    netDriverEarnings: 0,
+    completedRides: 0,
+  });
+
+  res.json({
+    summary: {
+      totalEarnings: Number(summary.totalEarnings.toFixed(2)),
+      platformCharges: Number(summary.platformCharges.toFixed(2)),
+      netDriverEarnings: Number(summary.netDriverEarnings.toFixed(2)),
+      completedRides: summary.completedRides,
+      currency: serializedRides[0]?.fareBreakdown?.currency || "INR",
+      date: start.toISOString(),
+    },
+    rides: serializedRides,
+  });
+});
+
 export const listAvailableRides = asyncHandler(async (req, res) => {
   const driverObjectId = new mongoose.Types.ObjectId(req.user.id);
+  const driver = await User.findById(req.user.id).select("collegeId").lean();
+  if (!driver?.collegeId) {
+    return res.json({ rides: [] });
+  }
+
   const rides = await Ride.find({
+    collegeId: driver.collegeId,
     status: { $in: REQUESTED_LIKE_STATUSES },
     driverId: null,
     deniedDriverIds: { $ne: driverObjectId },
@@ -472,6 +671,9 @@ export const acceptRide = asyncHandler(async (req, res) => {
   if (driver.driverApprovalStatus !== "approved" || (driver.driverVerificationStatus && driver.driverVerificationStatus !== "approved")) {
     throw new AppError(403, "Driver verification pending. Upload documents and wait for admin approval.");
   }
+  if (!driver.collegeId) {
+    throw new AppError(403, "Driver is not mapped to any college");
+  }
 
   const rideId = new mongoose.Types.ObjectId(req.params.rideId);
   const now = new Date();
@@ -482,6 +684,7 @@ export const acceptRide = asyncHandler(async (req, res) => {
       status: { $in: REQUESTED_LIKE_STATUSES },
       driverId: null,
       deniedDriverIds: { $ne: new mongoose.Types.ObjectId(req.user.id) },
+      collegeId: driver.collegeId,
     },
     {
       $set: {
@@ -523,6 +726,7 @@ export const rejectRide = asyncHandler(async (req, res) => {
       _id: rideId,
       status: { $in: REQUESTED_LIKE_STATUSES },
       driverId: null,
+      ...(req.user.collegeId ? { collegeId: new mongoose.Types.ObjectId(req.user.collegeId) } : {}),
     },
     {
       $addToSet: {
@@ -810,10 +1014,17 @@ export const cancelRide = asyncHandler(async (req, res) => {
 
   const isStudent = req.user.role === ROLES.STUDENT && ride.studentId?.toString() === req.user.id;
   const isDriver = req.user.role === ROLES.DRIVER && ride.driverId?.toString() === req.user.id;
-  const isAdmin = req.user.role === ROLES.ADMIN;
+  const isAdmin = ADMIN_DASHBOARD_ROLES.includes(req.user.role);
 
   if (!isStudent && !isDriver && !isAdmin) {
     throw new AppError(403, "Not allowed to cancel this ride");
+  }
+
+  if (req.user.role === ROLES.SUB_ADMIN) {
+    const rideCollegeId = ride.collegeId?.toString?.() || null;
+    if (!req.user.collegeId || rideCollegeId !== req.user.collegeId) {
+      throw new AppError(403, "Sub admin cannot cancel rides outside assigned college");
+    }
   }
 
   if (ride.status === RIDE_STATUS.COMPLETED || ride.status === RIDE_STATUS.CANCELLED) {
@@ -867,6 +1078,7 @@ export const cancelRide = asyncHandler(async (req, res) => {
 
   await Cancellation.create({
     rideId,
+    collegeId: ride.collegeId || null,
     cancelledByUserId: new mongoose.Types.ObjectId(req.user.id),
     cancelledByRole: cancelledBy,
     reasonKey: cancellation.reasonKey,
@@ -926,12 +1138,13 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
 
   const rideId = new mongoose.Types.ObjectId(req.params.rideId);
   const now = new Date();
-  const settings = await getRideRuntimeSettings();
 
   const ride = await Ride.findById(rideId).lean();
   if (!ride) {
     throw new AppError(404, "Ride not found");
   }
+
+  const settings = await getRideRuntimeSettings(ride?.collegeId?.toString?.() || null);
 
   const rideDriverId = ride.driverId?.toString() || null;
   const rideStudentId = ride.studentId?.toString() || null;
@@ -948,7 +1161,7 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
     throw new AppError(409, "Ride location can be updated only in accepted/ongoing states");
   }
 
-  if (ENFORCE_CAMPUS_BOUNDARY && !isWithinCampusBoundary({ lat: req.body.lat, lng: req.body.lng })) {
+  if (ENFORCE_CAMPUS_BOUNDARY && !isWithinBoundary({ lat: req.body.lat, lng: req.body.lng }, settings.campusBoundary)) {
     throw new AppError(400, "Driver location must stay inside the campus boundary.");
   }
 
@@ -966,6 +1179,9 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
     }
   }
 
+  const locationTimestamp = req.body.timestamp ? new Date(req.body.timestamp) : now;
+  const normalizedUpdatedAt = Number.isNaN(locationTimestamp.getTime()) ? now : locationTimestamp;
+
   const updatedRide = await Ride.findOneAndUpdate(
     { _id: rideId },
     {
@@ -973,13 +1189,31 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
         [isDriver ? "driverLocation" : "studentLocation"]: {
           lat: req.body.lat,
           lng: req.body.lng,
-          updatedAt: now,
+          ...(isDriver ? { heading: typeof req.body.heading === "number" ? req.body.heading : null } : {}),
+          ...(isDriver ? { speed: typeof req.body.speed === "number" ? req.body.speed : null } : {}),
+          updatedAt: normalizedUpdatedAt,
         },
         updatedAt: now,
       },
     },
     { new: true, lean: true },
   );
+
+  if (isDriver) {
+    await User.updateOne(
+      { _id: new mongoose.Types.ObjectId(req.user.id) },
+      {
+        $set: {
+          currentLocation: { lat: req.body.lat, lng: req.body.lng, updatedAt: normalizedUpdatedAt },
+          currentLocationGeo: {
+            type: "Point",
+            coordinates: [req.body.lng, req.body.lat],
+          },
+          updatedAt: now,
+        },
+      },
+    );
+  }
 
   const populated = await Ride.findById(updatedRide._id)
     .populate("studentId", "name email phone")
@@ -992,8 +1226,15 @@ export const updateDriverLocation = asyncHandler(async (req, res) => {
 });
 
 function enforceRideAccess(user, ride) {
-  if (user.role === ROLES.ADMIN) {
+  if ([ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user.role)) {
     return;
+  }
+
+  if (user.role === ROLES.SUB_ADMIN) {
+    if (user.collegeId && ride.collegeId?.toString?.() === user.collegeId) {
+      return;
+    }
+    throw new AppError(403, "Forbidden ride access");
   }
 
   const resolveRefId = (value) => {
@@ -1135,6 +1376,7 @@ function serializeRide(ride) {
 
   return {
     id: ride._id.toString(),
+    collegeId: ride.collegeId?.toString?.() || null,
     studentId,
     driverId,
     student: ride.studentId && typeof ride.studentId === "object" && ride.studentId._id

@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { z } from "zod";
 import { Issue, Ride } from "../models/index.js";
-import { ROLES } from "../constants/roles.js";
+import { ADMIN_DASHBOARD_ROLES, ROLES } from "../constants/roles.js";
 import { AppError } from "../utils/AppError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { emitAdminIssueCreated, emitAdminIssueUpdated } from "../services/socket.js";
@@ -65,13 +65,15 @@ export const createIssue = asyncHandler(async (req, res) => {
   const serialized = serializeIssue(populated);
   emitAdminIssueCreated(serialized);
 
-  await createRoleNotifications({
-    role: ROLES.ADMIN,
-    type: "issue_created",
-    title: "New support issue",
-    body: `${serialized.reporter?.name || "A user"} reported a ${serialized.category.replace("_", " ")} issue.`,
-    data: { issueId: serialized.id, category: serialized.category, status: serialized.status },
-  });
+  await Promise.allSettled(
+    ADMIN_DASHBOARD_ROLES.map((role) => createRoleNotifications({
+      role,
+      type: "issue_created",
+      title: "New support issue",
+      body: `${serialized.reporter?.name || "A user"} reported a ${serialized.category.replace("_", " ")} issue.`,
+      data: { issueId: serialized.id, category: serialized.category, status: serialized.status },
+    })),
+  );
 
   res.status(201).json({ issue: serialized });
 });
@@ -97,6 +99,11 @@ export const listAdminIssues = asyncHandler(async (req, res) => {
   }
   if (ISSUE_CATEGORIES.includes(category)) {
     query.category = category;
+  }
+
+  if (req.user.role === ROLES.SUB_ADMIN && req.user.collegeId) {
+    const rideIds = await Ride.find({ collegeId: new mongoose.Types.ObjectId(req.user.collegeId) }).distinct("_id");
+    query.rideId = { $in: rideIds };
   }
 
   const issues = await Issue.find(query)
@@ -160,13 +167,15 @@ export const updateIssueStatus = asyncHandler(async (req, res) => {
     });
   }
 
-  await createRoleNotifications({
-    role: ROLES.ADMIN,
-    type: "issue_updated",
-    title: "Issue updated",
-    body: `Issue ${serialized.id.slice(-6)} moved to ${serialized.status.replace("_", " ")}.`,
-    data: { issueId: serialized.id, status: serialized.status },
-  });
+  await Promise.allSettled(
+    ADMIN_DASHBOARD_ROLES.map((role) => createRoleNotifications({
+      role,
+      type: "issue_updated",
+      title: "Issue updated",
+      body: `Issue ${serialized.id.slice(-6)} moved to ${serialized.status.replace("_", " ")}.`,
+      data: { issueId: serialized.id, status: serialized.status },
+    })),
+  );
 
   res.json({ issue: serialized });
 });

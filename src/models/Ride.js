@@ -14,6 +14,7 @@ const pointSchema = new mongoose.Schema(
 const rideSchema = new mongoose.Schema(
   {
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    collegeId: { type: mongoose.Schema.Types.ObjectId, ref: "College", default: null },
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     pickup: { type: pointSchema, required: true },
     drop: { type: pointSchema, required: true },
@@ -47,6 +48,7 @@ const rideSchema = new mongoose.Schema(
 
 rideSchema.index({ studentId: 1, createdAt: -1 });
 rideSchema.index({ driverId: 1, createdAt: -1 });
+rideSchema.index({ collegeId: 1, status: 1, createdAt: -1 });
 rideSchema.index({ status: 1, createdAt: -1 });
 rideSchema.index({ verificationCode: 1, status: 1 });
 rideSchema.index({ sharedLinkToken: 1 }, { unique: true, sparse: true });

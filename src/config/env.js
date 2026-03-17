@@ -3,8 +3,8 @@ import { parseOriginList } from "../utils/originMatcher.js";
 
 dotenv.config();
 
-const DEFAULT_CLIENT_ORIGINS = "http://localhost:8080,https://campusride-deploy.vercel.app";
-const DEFAULT_WILDCARD_ORIGIN_PATTERNS = "*.vercel.app";
+const DEFAULT_CLIENT_ORIGINS = "http://localhost:8080,https://campusride-deploy.vercel.app,https://campusride.tech,https://www.campusride.tech";
+const DEFAULT_WILDCARD_ORIGIN_PATTERNS = "*.vercel.app,*.campusride.tech";
 
 const required = ["MONGODB_URI", "JWT_SECRET"];
 

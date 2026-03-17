@@ -2,13 +2,13 @@ import { Router } from "express";
 import { getDashboardAnalytics, getFilteredRides, getScheduledRideQueue } from "../controllers/adminController.js";
 import { listVerificationRequests, reviewVerification, reviewVerificationSchema } from "../controllers/driversController.js";
 import { listAdminIssues, updateIssueSchema, updateIssueStatus } from "../controllers/issuesController.js";
-import { ROLES } from "../constants/roles.js";
+import { ADMIN_DASHBOARD_ROLES } from "../constants/roles.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 
 const router = Router();
 
-router.use(requireAuth, requireRole(ROLES.ADMIN));
+router.use(requireAuth, requireRole(...ADMIN_DASHBOARD_ROLES));
 
 router.get("/analytics", getDashboardAnalytics);
 router.get("/rides", getFilteredRides);

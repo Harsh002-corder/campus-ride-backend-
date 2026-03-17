@@ -85,6 +85,10 @@ export const setDriverLocation = asyncHandler(async (req, res) => {
           lng: req.body.lng,
           updatedAt: now,
         },
+        currentLocationGeo: {
+          type: "Point",
+          coordinates: [req.body.lng, req.body.lat],
+        },
         updatedAt: now,
       },
     },
@@ -258,6 +262,7 @@ function serializeDriver(user) {
     email: user.email,
     phone: user.phone || null,
     role: user.role,
+    collegeId: user.collegeId?.toString?.() || null,
     isOnline: Boolean(user.isOnline),
     driverApprovalStatus: user.driverApprovalStatus,
     currentLocation: user.currentLocation || null,

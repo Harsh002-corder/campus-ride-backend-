@@ -1,10 +1,11 @@
 import mongoose from "mongoose";
 import { z } from "zod";
-import { ALLOWED_ROLES, ROLES } from "../constants/roles.js";
+import { ALLOWED_ROLES, ROLES, SUPER_ADMIN_ROLES } from "../constants/roles.js";
 import { Favorite, User } from "../models/index.js";
 import { AppError } from "../utils/AppError.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { sendAccountDeletedEmail, sendAccountStatusEmail } from "../utils/mailer.js";
+import { hashPassword } from "../utils/password.js";
 
 export const updateProfileSchema = z.object({
   name: z.string().min(2).max(120).optional(),
@@ -17,10 +18,54 @@ export const adminUpdateUserSchema = z.object({
   phone: z.string().min(7).max(20).nullable().optional(),
   avatarUrl: z.string().max(2_000_000).nullable().optional(),
   role: z.enum(ALLOWED_ROLES).optional(),
+  collegeId: z.string().regex(/^[0-9a-fA-F]{24}$/).nullable().optional(),
   isActive: z.boolean().optional(),
   driverApprovalStatus: z.enum(["pending", "approved", "rejected"]).optional(),
   driverVerificationStatus: z.enum(["pending", "approved", "rejected"]).optional(),
   vehicleSeats: z.number().int().min(1).max(10).optional(),
+});
+
+export const createSubAdminSchema = z.object({
+  name: z.string().min(2).max(120),
+  email: z.string().email().max(200).toLowerCase(),
+  password: z.string().min(8).max(128),
+  phone: z.string().min(7).max(20).optional().nullable(),
+  collegeId: z.string().regex(/^[0-9a-fA-F]{24}$/).optional().nullable(),
+});
+
+export const createSubAdmin = asyncHandler(async (req, res) => {
+  if (req.user.role !== ROLES.ADMIN) {
+    throw new AppError(403, "Only admin can create sub-admin accounts");
+  }
+
+  const { name, email, password, phone, collegeId } = req.body;
+
+  const existing = await User.findOne({ email }).lean();
+  if (existing) {
+    throw new AppError(409, "An account with this email already exists");
+  }
+
+  const passwordHash = await hashPassword(password);
+  const now = new Date();
+
+  const user = await User.create({
+    name,
+    email,
+    phone: phone || null,
+    passwordHash,
+    role: ROLES.SUB_ADMIN,
+    collegeId: collegeId ? new mongoose.Types.ObjectId(collegeId) : null,
+    isActive: true,
+    isOnline: false,
+    driverApprovalStatus: "approved",
+    driverVerificationStatus: "approved",
+    vehicleSeats: 4,
+    driverPerformanceScore: 60,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  res.status(201).json({ user: serializeUser(user) });
 });
 
 export const createFavoriteSchema = z.object({
@@ -34,7 +79,12 @@ export const createFavoriteSchema = z.object({
 
 export const listUsers = asyncHandler(async (req, res) => {
   const role = req.query.role;
-  const query = role ? { role } : {};
+  const query = {
+    ...(role ? { role } : {}),
+    ...(req.user.role === ROLES.SUB_ADMIN && req.user.collegeId
+      ? { collegeId: new mongoose.Types.ObjectId(req.user.collegeId) }
+      : {}),
+  };
 
   const users = await User.find(query)
     .select("-passwordHash")
@@ -82,7 +132,17 @@ export const adminUpdateUser = asyncHandler(async (req, res) => {
     throw new AppError(404, "User not found");
   }
 
-  if (user.role === ROLES.ADMIN && req.body.role && req.body.role !== ROLES.ADMIN) {
+  const isSuperAdminLike = SUPER_ADMIN_ROLES.includes(req.user.role);
+  if (!isSuperAdminLike) {
+    if (!req.user.collegeId || user.collegeId?.toString?.() !== req.user.collegeId) {
+      throw new AppError(403, "Forbidden: cannot manage users outside your college");
+    }
+    if (req.body.role && [ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUB_ADMIN].includes(req.body.role)) {
+      throw new AppError(403, "Sub admin cannot promote admin roles");
+    }
+  }
+
+  if ([ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(user.role) && req.body.role && ![ROLES.ADMIN, ROLES.SUPER_ADMIN].includes(req.body.role)) {
     throw new AppError(400, "Cannot downgrade an admin user");
   }
 
@@ -146,8 +206,14 @@ export const adminDeleteUser = asyncHandler(async (req, res) => {
     throw new AppError(404, "User not found");
   }
 
-  if (user.role === ROLES.ADMIN) {
+  if ([ROLES.ADMIN, ROLES.SUPER_ADMIN, ROLES.SUB_ADMIN].includes(user.role)) {
     throw new AppError(400, "Cannot delete an admin user");
+  }
+
+  if (!SUPER_ADMIN_ROLES.includes(req.user.role)) {
+    if (!req.user.collegeId || user.collegeId?.toString?.() !== req.user.collegeId) {
+      throw new AppError(403, "Forbidden: cannot delete users outside your college");
+    }
   }
 
   if (user._id.toString() === req.user.id) {
@@ -242,6 +308,7 @@ function serializeUser(user) {
     phone: user.phone || null,
     avatarUrl: user.avatarUrl || null,
     role: user.role,
+    collegeId: user.collegeId?.toString?.() || null,
     isOnline: Boolean(user.isOnline),
     isActive: user.isActive !== false,
     driverApprovalStatus: user.driverApprovalStatus || "approved",

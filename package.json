@@ -7,7 +7,10 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "check": "node --check src/server.js",
-    "seed:ride-settings": "node scripts/seed-ride-settings.mjs"
+    "seed:ride-settings": "node scripts/seed-ride-settings.mjs",
+    "upsert:admin": "node scripts/upsert-admin.mjs",
+    "upsert:super-admin": "node scripts/upsert-super-admin.mjs",
+    "upsert:sub-admin": "node scripts/upsert-sub-admin.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

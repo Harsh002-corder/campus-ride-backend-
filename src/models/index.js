@@ -14,3 +14,4 @@ export { ScheduledRide } from "./ScheduledRide.js";
 export { Verification } from "./Verification.js";
 export { Issue } from "./Issue.js";
 export { EmailLog } from "./EmailLog.js";
+export { College } from "./College.js";
