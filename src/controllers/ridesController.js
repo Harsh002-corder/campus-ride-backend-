@@ -104,14 +104,7 @@ function assertPickupGpsVerification(pickup, studentGps, boundaryPolygon) {
     throw new AppError(400, "Pickup location must be inside the campus.");
   }
 
-  const meters = distanceInMeters(
-    { lat: studentGps.lat, lng: studentGps.lng },
-    { lat: pickup.lat, lng: pickup.lng },
-  );
-
-  if (ENFORCE_CAMPUS_BOUNDARY && meters > MAX_PICKUP_GPS_DISTANCE_METERS && !isCoarseGps) {
-    throw new AppError(400, "Pickup location must be within 200 meters of your current GPS location.");
-  }
+  // Distance check removed: allow any pickup distance from GPS
 }
 
 function parseBooleanSetting(value, fallback) {
