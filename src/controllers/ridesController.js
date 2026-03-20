@@ -58,6 +58,7 @@ const DEFAULT_RIDE_SETTINGS = {
 
 const DEFAULT_SHARE_LINK_TTL_MS = 1000 * 60 * 60 * 24;
 const REQUESTED_LIKE_STATUSES = [RIDE_STATUS.REQUESTED, "requested"];
+const REQUESTED_LIKE_STATUS_REGEX = /^(pending|requested)$/i;
 const ONGOING_LIKE_STATUSES = [RIDE_STATUS.ONGOING, "ongoing"];
 // TODO: set back to true before going live
 const ENFORCE_CAMPUS_BOUNDARY = true;
@@ -600,14 +601,9 @@ export const getDriverTodayEarnings = asyncHandler(async (req, res) => {
 
 export const listAvailableRides = asyncHandler(async (req, res) => {
   const driverObjectId = new mongoose.Types.ObjectId(req.user.id);
-  const driver = await User.findById(req.user.id).select("collegeId").lean();
-  if (!driver?.collegeId) {
-    return res.json({ rides: [] });
-  }
 
   const rides = await Ride.find({
-    collegeId: driver.collegeId,
-    status: { $in: REQUESTED_LIKE_STATUSES },
+    status: { $regex: REQUESTED_LIKE_STATUS_REGEX },
     driverId: null,
     deniedDriverIds: { $ne: driverObjectId },
   })
@@ -688,20 +684,15 @@ export const acceptRide = asyncHandler(async (req, res) => {
   if (driver.driverApprovalStatus !== "approved" || (driver.driverVerificationStatus && driver.driverVerificationStatus !== "approved")) {
     throw new AppError(403, "Driver verification pending. Upload documents and wait for admin approval.");
   }
-  if (!driver.collegeId) {
-    throw new AppError(403, "Driver is not mapped to any college");
-  }
-
   const rideId = new mongoose.Types.ObjectId(req.params.rideId);
   const now = new Date();
 
   const updatedRide = await Ride.findOneAndUpdate(
     {
       _id: rideId,
-      status: { $in: REQUESTED_LIKE_STATUSES },
+      status: { $regex: REQUESTED_LIKE_STATUS_REGEX },
       driverId: null,
       deniedDriverIds: { $ne: new mongoose.Types.ObjectId(req.user.id) },
-      collegeId: driver.collegeId,
     },
     {
       $set: {
@@ -741,9 +732,8 @@ export const rejectRide = asyncHandler(async (req, res) => {
   const deniedRide = await Ride.findOneAndUpdate(
     {
       _id: rideId,
-      status: { $in: REQUESTED_LIKE_STATUSES },
+      status: { $regex: REQUESTED_LIKE_STATUS_REGEX },
       driverId: null,
-      ...(req.user.collegeId ? { collegeId: new mongoose.Types.ObjectId(req.user.collegeId) } : {}),
     },
     {
       $addToSet: {

@@ -343,10 +343,11 @@ export function emitNewRideRequest(ride, onlineDriverIds = []) {
       io.to(`user:${driverId}`).emit("newRideRequest", ride);
       io.to(`user:${driverId}`).emit("ride:requested", ride);
     }
-  } else {
-    io.to("role:driver").emit("newRideRequest", ride);
-    io.to("role:driver").emit("ride:requested", ride);
   }
+
+  // Always broadcast to active drivers so dashboards stay in sync across mapping scopes.
+  io.to("role:driver").emit("newRideRequest", ride);
+  io.to("role:driver").emit("ride:requested", ride);
 
   io.to("role:admin").emit("admin:ride-requested", ride);
   io.to("role:super_admin").emit("admin:ride-requested", ride);
