@@ -62,6 +62,23 @@ export const superAdminSignupSchema = z.object({
   password: z.string().min(8).max(128),
 });
 
+async function resolveSignupCollegeId(collegeId) {
+  if (collegeId) {
+    const selectedCollege = await College.findOne({ _id: collegeId, status: "active" }).select("_id").lean();
+    if (!selectedCollege) {
+      throw new AppError(400, "Selected college is invalid or inactive");
+    }
+    return selectedCollege._id;
+  }
+
+  const defaultCollege = await College.findOne({ status: "active" }).sort({ updatedAt: -1, createdAt: -1 }).select("_id").lean();
+  if (!defaultCollege?._id) {
+    throw new AppError(503, "No active college available for onboarding. Contact admin.");
+  }
+
+  return defaultCollege._id;
+}
+
 export const requestSignupOtp = asyncHandler(async (req, res) => {
   const { name, email, password, role, phone, driverSecurity, collegeId } = req.body;
   const existingUser = await User.findOne({ email }).lean();
@@ -69,12 +86,7 @@ export const requestSignupOtp = asyncHandler(async (req, res) => {
     throw new AppError(409, "An account with this email already exists");
   }
 
-  if (collegeId) {
-    const college = await College.findOne({ _id: collegeId, status: "active" }).lean();
-    if (!college) {
-      throw new AppError(400, "Selected college is invalid or inactive");
-    }
-  }
+  const resolvedCollegeId = await resolveSignupCollegeId(collegeId);
 
   const otp = generateOtp(6);
   const passwordHash = await hashPassword(password);
@@ -101,7 +113,7 @@ export const requestSignupOtp = asyncHandler(async (req, res) => {
     passwordHash,
     role,
     phone: phone || null,
-    collegeId: collegeId || null,
+    collegeId: resolvedCollegeId,
     driverSecurity: role === ROLES.DRIVER ? driverSecurity : null,
     otp,
     consumed: false,
@@ -158,12 +170,14 @@ export const verifySignupOtp = asyncHandler(async (req, res) => {
     throw new AppError(409, "An account with this email already exists");
   }
 
+  const resolvedCollegeId = await resolveSignupCollegeId(otpDoc.collegeId || null);
+
   const userData = {
     name: otpDoc.name,
     email: otpDoc.email,
     phone: otpDoc.phone,
     driverSecurity: otpDoc.driverSecurity || null,
-    collegeId: otpDoc.collegeId || null,
+    collegeId: resolvedCollegeId,
     passwordHash: otpDoc.passwordHash,
     role: otpDoc.role,
     isOnline: false,

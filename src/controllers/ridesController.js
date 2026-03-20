@@ -82,6 +82,33 @@ function getShareTrackingUrl(token) {
   return `${base.replace(/\/$/, "")}/track/${token}`;
 }
 
+async function ensureStudentCollegeId(studentId) {
+  const student = await User.findById(studentId).select("collegeId").lean();
+  if (!student) {
+    throw new AppError(404, "Student account not found");
+  }
+
+  if (student.collegeId) {
+    return student.collegeId;
+  }
+
+  const defaultCollege = await College.findOne({ status: "active" })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .select("_id")
+    .lean();
+
+  if (!defaultCollege?._id) {
+    throw new AppError(503, "No active college available for ride booking. Contact admin.");
+  }
+
+  await User.updateOne(
+    { _id: new mongoose.Types.ObjectId(studentId), collegeId: null },
+    { $set: { collegeId: defaultCollege._id, updatedAt: new Date() } },
+  );
+
+  return defaultCollege._id;
+}
+
 function assertRidePointsWithinCampus(pickup, drop, boundaryPolygon) {
   if (!ENFORCE_CAMPUS_BOUNDARY) return;
   if (!isWithinBoundary(pickup, boundaryPolygon)) {
@@ -328,12 +355,9 @@ export const bookRide = asyncHandler(async (req, res) => {
     throw new AppError(403, "Only students can book rides");
   }
 
-  const student = await User.findById(req.user.id).select("collegeId").lean();
-  if (!student?.collegeId) {
-    throw new AppError(400, "Your account is not mapped to a college. Contact admin.");
-  }
+  const studentCollegeId = await ensureStudentCollegeId(req.user.id);
 
-  const settings = await getRideRuntimeSettings(student.collegeId.toString());
+  const settings = await getRideRuntimeSettings(studentCollegeId.toString());
   if (!settings.bookingEnabled) {
     throw new AppError(409, `Ride booking is currently disabled. Contact support at ${settings.supportPhone}`);
   }
@@ -356,9 +380,9 @@ export const bookRide = asyncHandler(async (req, res) => {
   }
 
   const [activeRideCount, onlineDriverCount, onlineDrivers] = await Promise.all([
-    Ride.countDocuments({ collegeId: student.collegeId, status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
-    User.countDocuments({ role: ROLES.DRIVER, collegeId: student.collegeId, isOnline: true, driverApprovalStatus: "approved" }),
-    User.find({ role: ROLES.DRIVER, collegeId: student.collegeId, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
+    Ride.countDocuments({ collegeId: studentCollegeId, status: { $in: [...REQUESTED_LIKE_STATUSES, RIDE_STATUS.ACCEPTED, ...ONGOING_LIKE_STATUSES] } }),
+    User.countDocuments({ role: ROLES.DRIVER, collegeId: studentCollegeId, isOnline: true, driverApprovalStatus: "approved" }),
+    User.find({ role: ROLES.DRIVER, collegeId: studentCollegeId, isOnline: true, driverApprovalStatus: "approved" }).select("_id").lean(),
   ]);
 
   const fareBreakdown = estimateRideFare({
@@ -383,7 +407,7 @@ export const bookRide = asyncHandler(async (req, res) => {
       pickup: req.body.pickup,
       drop: req.body.drop,
       passengers: requestedPassengers,
-      collegeId: student.collegeId.toString(),
+      collegeId: studentCollegeId.toString(),
       matchingRadiusKm: settings.matchingRadiusKm,
     });
 
@@ -394,7 +418,7 @@ export const bookRide = asyncHandler(async (req, res) => {
 
   const rideDoc = {
     studentId: new mongoose.Types.ObjectId(req.user.id),
-    collegeId: student.collegeId,
+    collegeId: studentCollegeId,
     driverId: null,
     pickup: req.body.pickup,
     drop: req.body.drop,
