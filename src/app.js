@@ -1,3 +1,4 @@
+import "express-async-errors";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -17,6 +18,16 @@ function createCorsBlockedError(origin) {
 export function createApp() {
   const app = express();
 
+  app.use((req, res, next) => {
+    const start = Date.now();
+    console.log(`[REQ] ${req.method} ${req.originalUrl}`);
+    res.on("finish", () => {
+      const elapsedMs = Date.now() - start;
+      console.log(`[RES] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${elapsedMs}ms)`);
+    });
+    next();
+  });
+
   app.use(helmet());
   app.use(cors({
     origin: (origin, callback) => {
@@ -35,7 +46,18 @@ export function createApp() {
   }));
   app.use(express.json({ limit: "8mb" }));
   app.use(dbRateLimit);
-  app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
+
+  if (!process.env.VERCEL) {
+    app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
+  }
+
+  app.get("/api", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "campus-rider-backend",
+      mode: process.env.VERCEL ? "serverless" : "node",
+    });
+  });
 
   app.use("/api", routes);
 

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import mongoose from "mongoose";
 import adminRoutes from "./adminRoutes.js";
 import authRoutes from "./authRoutes.js";
 import chatbotRoutes from "./chatbotRoutes.js";
@@ -16,8 +17,22 @@ import usersRoutes from "./usersRoutes.js";
 
 const router = Router();
 
-router.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "campus-rider-backend" });
+router.get("/", (_req, res) => {
+  res.json({ ok: true, message: "API is running" });
+});
+
+router.get("/health", async (_req, res, next) => {
+  try {
+    res.json({
+      ok: true,
+      service: "campus-rider-backend",
+      uptimeSeconds: Math.round(process.uptime()),
+      mongoReadyState: mongoose.connection.readyState,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.use("/auth", authRoutes);

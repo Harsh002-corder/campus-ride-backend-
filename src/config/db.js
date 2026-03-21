@@ -2,10 +2,24 @@ import mongoose from "mongoose";
 import { env } from "./env.js";
 import "../models/index.js";
 
-let connectingPromise = null;
-let reconnectTimer = null;
+const globalForMongoose = globalThis;
+
+if (!globalForMongoose.__campusRideMongoose) {
+  globalForMongoose.__campusRideMongoose = {
+    conn: null,
+    promise: null,
+    eventsBound: false,
+  };
+}
+
+const mongoCache = globalForMongoose.__campusRideMongoose;
 
 function bindConnectionEvents() {
+  if (mongoCache.eventsBound) {
+    return;
+  }
+  mongoCache.eventsBound = true;
+
   mongoose.connection.on("connected", () => {
     console.log(`[DB] Connected to MongoDB (${mongoose.connection.name})`);
   });
@@ -15,46 +29,41 @@ function bindConnectionEvents() {
   });
 
   mongoose.connection.on("disconnected", () => {
-    console.warn("[DB] MongoDB disconnected. Reconnect loop is active.");
-    scheduleReconnect();
+    console.warn("[DB] MongoDB disconnected.");
   });
 }
 
-function scheduleReconnect() {
-  if (reconnectTimer || mongoose.connection.readyState === 1) {
-    return;
-  }
-
-  reconnectTimer = setTimeout(async () => {
-    reconnectTimer = null;
-    try {
-      await connectDb();
-    } catch (error) {
-      console.error("[DB] Reconnect attempt failed:", error.message);
-      scheduleReconnect();
-    }
-  }, env.mongoReconnectMs);
-}
-
 export async function connectDb() {
-  if (mongoose.connection.readyState === 1) {
-    return mongoose.connection;
+  if (!env.mongodbUri) {
+    throw new Error("Missing MongoDB URI. Set MONGO_URI in environment variables.");
   }
 
-  if (!connectingPromise) {
-    connectingPromise = mongoose.connect(env.mongodbUri, {
+  if (mongoCache.conn) {
+    return mongoCache.conn;
+  }
+
+  if (!mongoCache.promise) {
+    mongoCache.promise = mongoose.connect(env.mongodbUri, {
       dbName: env.mongodbDbName,
-      autoIndex: true,
+      autoIndex: false,
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
       maxPoolSize: 20,
-    }).finally(() => {
-      connectingPromise = null;
-    });
+      minPoolSize: 1,
+    }).then((mongooseInstance) => mongooseInstance.connection)
+      .catch((error) => {
+        console.error("[DB] Initial connection failed:", error.message);
+        throw error;
+      });
   }
 
-  await connectingPromise;
-  return mongoose.connection;
+  try {
+    mongoCache.conn = await mongoCache.promise;
+    return mongoCache.conn;
+  } catch (error) {
+    mongoCache.promise = null;
+    throw error;
+  }
 }
 
 export function getDb() {
@@ -65,14 +74,12 @@ export function getDb() {
 }
 
 export async function closeDb() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-
   if (mongoose.connection.readyState !== 0) {
     await mongoose.disconnect();
   }
+
+  mongoCache.conn = null;
+  mongoCache.promise = null;
 }
 
 bindConnectionEvents();
