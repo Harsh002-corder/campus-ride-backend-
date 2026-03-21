@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import { env } from "./env.js";
 import "../models/index.js";
 
+mongoose.set("bufferCommands", false);
+
 const globalForMongoose = globalThis;
 
 if (!globalForMongoose.__campusRideMongoose) {
@@ -44,6 +46,7 @@ export async function connectDb() {
 
   if (!mongoCache.promise) {
     mongoCache.promise = mongoose.connect(env.mongodbUri, {
+      bufferCommands: false,
       dbName: env.mongodbDbName,
       autoIndex: false,
       serverSelectionTimeoutMS: 10000,
