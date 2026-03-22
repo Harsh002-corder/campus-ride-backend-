@@ -13,6 +13,7 @@ const driverSchema = new mongoose.Schema(
       lng: { type: Number },
       updatedAt: { type: Date },
     },
+    fcmToken: { type: String, default: null },
     preferredRoute: {
       pickup: {
         lat: { type: Number },

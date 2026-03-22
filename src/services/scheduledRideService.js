@@ -1,9 +1,9 @@
 import cron from "node-cron";
 import { RIDE_STATUS } from "../constants/roles.js";
-import { Ride, ScheduledRide } from "../models/index.js";
+import { Ride, ScheduledRide, User } from "../models/index.js";
 import { findBestDriverForRide } from "./matchingService.js";
 import { emitNewRideRequest, emitRideUpdate } from "./socket.js";
-import { createRideStatusNotifications } from "./notificationService.js";
+import { createRideStatusNotifications, notifyDriversNewRideRequest } from "./notificationService.js";
 
 let schedulerStarted = false;
 
@@ -73,6 +73,17 @@ async function activateScheduledRide(entry) {
     pickup: updatedRide.pickup,
     drop: updatedRide.drop,
   });
+
+  const onlineDrivers = await User.find({ role: "driver", isOnline: true, driverApprovalStatus: "approved" })
+    .select("_id")
+    .lean();
+
+  await notifyDriversNewRideRequest({
+    id: updatedRide._id.toString(),
+    status: updatedRide.status,
+    pickup: updatedRide.pickup,
+    drop: updatedRide.drop,
+  }, onlineDrivers.map((driver) => driver._id?.toString?.() || String(driver._id)));
 
   await createRideStatusNotifications({
     id: updatedRide._id.toString(),

@@ -17,6 +17,8 @@ const userSchema = new mongoose.Schema(
     driverPerformanceScore: { type: Number, default: 60 },
     driverStats: { type: Object, default: {} },
     currentLocation: { type: Object, default: null },
+    fcmToken: { type: String, default: null },
+    fcmTokens: { type: [String], default: [] },
     currentLocationGeo: {
       type: {
         type: String,

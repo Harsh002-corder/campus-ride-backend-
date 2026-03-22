@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   acceptRide,
+  arriveRide,
   bookRide,
   bookRideSchema,
   cancelRide,
@@ -40,6 +41,7 @@ router.get("/driver/today-earnings", requireRole(ROLES.DRIVER), getDriverTodayEa
 router.get("/:rideId", getRideById);
 router.get("/:rideId/invoice", downloadRideInvoice);
 router.post("/:rideId/accept", requireRole(ROLES.DRIVER), acceptRide);
+router.post("/:rideId/arrive", requireRole(ROLES.DRIVER), arriveRide);
 router.post("/:rideId/reject", requireRole(ROLES.DRIVER), rejectRide);
 router.post("/:rideId/deny", requireRole(ROLES.DRIVER), rejectRide);
 router.post("/:rideId/start", requireRole(ROLES.DRIVER), startRide);

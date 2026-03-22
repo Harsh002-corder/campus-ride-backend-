@@ -7,6 +7,7 @@ const notificationSchema = new mongoose.Schema(
     title: { type: String, required: true },
     body: { type: String, required: true },
     data: { type: Object, default: {} },
+    dedupeKey: { type: String, default: null },
     readAt: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
   },
@@ -18,5 +19,6 @@ const notificationSchema = new mongoose.Schema(
 
 notificationSchema.index({ userId: 1, createdAt: -1 });
 notificationSchema.index({ userId: 1, readAt: 1 });
+notificationSchema.index({ userId: 1, dedupeKey: 1, createdAt: -1 });
 
 export const Notification = mongoose.models.Notification || mongoose.model("Notification", notificationSchema);
